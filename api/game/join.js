@@ -11,21 +11,23 @@ module.exports = async (req, res) => {
   const sid = body?.sid;
   const initData = body?.initData;
 
+  if (!sid) return sendJson(res, 400, { ok: false, reason: "missing_sid" });
+
   const v = validateInitData(initData, process.env.BOT_TOKEN);
   if (!v.ok) return sendJson(res, 401, { ok: false, reason: v.reason });
 
-  const session = sid ? await redis.get(`session:${sid}`) : null;
+  const session = await redis.get(`session:${sid}`);
   if (!session) return sendJson(res, 404, { ok: false, reason: "no_session" });
 
   const user = v.user;
   if (!user?.id) return sendJson(res, 401, { ok: false, reason: "no_user" });
 
-  // membership check (recommended)
+  // membership check (best effort)
   try {
     await tg.getChatMember(session.chatId, user.id);
   } catch {
-    // agar bot admin bo‘lmasa, getChatMember kafolatli ishlamasligi mumkin :contentReference[oaicite:11]{index=11}
-    // shu sababli, fallback: baribir join qilamiz (xohlasang bu yerda return 403 qil).
+    // bot admin bo'lmasa ba'zan getChatMember ishlamasligi mumkin.
+    // fallback: baribir davom etamiz.
   }
 
   if (session.status !== "lobby") return sendJson(res, 400, { ok: false, reason: "not_lobby" });

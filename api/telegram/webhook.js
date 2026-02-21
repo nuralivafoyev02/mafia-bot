@@ -19,18 +19,28 @@ async function saveSession(session) {
   await redis.set(`chatActive:${session.chatId}`, session.sid);
 }
 
+function buildBaseUrl(req) {
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers["host"];
+
+  // APP_URL bo'lsa: protocol bo'lishi shart. Oxiridagi slashni kesamiz.
+  if (APP_URL && /^https?:\/\//.test(APP_URL)) return APP_URL.replace(/\/$/, "");
+  return `${proto}://${host}`;
+}
+
 module.exports = async (req, res) => {
   if (req.method !== "POST") return sendJson(res, 405, { ok: false });
 
   // Telegram webhook secret header
   const hdr = req.headers["x-telegram-bot-api-secret-token"];
-  if (WEBHOOK_SECRET && hdr !== WEBHOOK_SECRET) return sendJson(res, 401, { ok: false, reason: "bad_secret" });
+  if (WEBHOOK_SECRET && hdr !== WEBHOOK_SECRET) {
+    return sendJson(res, 401, { ok: false, reason: "bad_secret" });
+  }
 
   const update = await readJson(req);
   if (!update) return sendJson(res, 200, { ok: true });
 
   try {
-    // /start (group) => create lobby
     if (update.message && update.message.text) {
       const msg = update.message;
       const chat = msg.chat;
@@ -39,6 +49,7 @@ module.exports = async (req, res) => {
       const text = msg.text.trim();
       const isGroup = (chat.type === "group" || chat.type === "supergroup");
 
+      // /start (group) => create lobby
       if (isGroup && (text === "/start" || text.startsWith("/start@"))) {
         // prevent multiple sessions
         const existing = await loadSessionByChat(chat.id);
@@ -54,12 +65,11 @@ module.exports = async (req, res) => {
         });
         await saveSession(session);
 
-        const proto = req.headers["x-forwarded-proto"] || "https";
-        const host = req.headers["x-forwarded-host"] || req.headers["host"];
-        const baseUrl = (APP_URL && APP_URL.startsWith("http")) ? APP_URL : `${proto}://${host}`;
+        const baseUrl = buildBaseUrl(req);
+        const sidEnc = encodeURIComponent(session.sid);
 
-        // /miniapp/ + sid
-        const url = `${baseUrl}/miniapp/?sid=${session.sid}`;
+        // ✅ query + hash: ba'zi WebView holatlarda query yo'qoladi, hash esa ko'pincha saqlanadi
+        const url = `${baseUrl}/miniapp/?sid=${sidEnc}#sid=${sidEnc}`;
 
         await tg.sendMessage(chat.id,
           `🎲 Mafia o‘yini ochildi!\n\n` +
@@ -76,6 +86,7 @@ module.exports = async (req, res) => {
         return sendJson(res, 200, { ok: true });
       }
 
+      // /stop (group) => end session
       if (isGroup && (text === "/stop" || text.startsWith("/stop@"))) {
         const existing = await loadSessionByChat(chat.id);
         if (existing) {

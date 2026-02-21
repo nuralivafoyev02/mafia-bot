@@ -9,6 +9,13 @@ function allAliveVoted(session) {
   return alive.every(id => session.vote.votes[id]);
 }
 
+function findAlivePlayerById(session, idNum) {
+  const p = session.players[String(idNum)];
+  if (!p) return null;
+  if (!p.alive) return null;
+  return p;
+}
+
 module.exports = async (req, res) => {
   if (req.method !== "POST") return sendJson(res, 405, { ok: false });
 
@@ -18,43 +25,71 @@ module.exports = async (req, res) => {
   const type = body?.type;       // "kill" | "heal" | "inspect" | "vote"
   const targetId = body?.targetId;
 
+  if (!sid) return sendJson(res, 400, { ok: false, reason: "missing_sid" });
+
   const v = validateInitData(initData, process.env.BOT_TOKEN);
   if (!v.ok) return sendJson(res, 401, { ok: false, reason: v.reason });
 
-  const session = sid ? await redis.get(`session:${sid}`) : null;
-  if (!session) return sendJson(res, 404, { ok: false });
+  const session = await redis.get(`session:${sid}`);
+  if (!session) return sendJson(res, 404, { ok: false, reason: "no_session" });
 
   const userId = v.user?.id;
+  if (!userId) return sendJson(res, 401, { ok: false, reason: "no_user" });
+
   const me = session.players[String(userId)];
   if (!me) return sendJson(res, 400, { ok: false, reason: "not_joined" });
   if (!me.alive) return sendJson(res, 400, { ok: false, reason: "dead" });
 
   const tId = Number(targetId);
+  if (!Number.isFinite(tId)) return sendJson(res, 400, { ok: false, reason: "bad_target" });
 
   if (session.status === "night") {
     const role = me.role;
 
     if (type === "kill") {
       if (!(role === "don" || role === "mafia")) return sendJson(res, 403, { ok: false, reason: "not_mafia" });
+
+      const target = findAlivePlayerById(session, tId);
+      if (!target) return sendJson(res, 400, { ok: false, reason: "target_not_alive" });
+      if (target.id === me.id) return sendJson(res, 400, { ok: false, reason: "cannot_target_self" });
+
       session.night.killVotes[String(userId)] = tId;
+      await redis.set(`session:${sid}`, session);
+      return sendJson(res, 200, { ok: true });
     }
 
     if (type === "heal") {
       if (role !== "doctor") return sendJson(res, 403, { ok: false, reason: "not_doctor" });
+
+      const target = findAlivePlayerById(session, tId);
+      if (!target) return sendJson(res, 400, { ok: false, reason: "target_not_alive" });
+
       session.night.healTarget = tId;
+      await redis.set(`session:${sid}`, session);
+      return sendJson(res, 200, { ok: true });
     }
 
     if (type === "inspect") {
       if (role !== "komissar") return sendJson(res, 403, { ok: false, reason: "not_komissar" });
+
+      const target = findAlivePlayerById(session, tId);
+      if (!target) return sendJson(res, 400, { ok: false, reason: "target_not_alive" });
+      if (target.id === me.id) return sendJson(res, 400, { ok: false, reason: "cannot_target_self" });
+
       session.night.inspectTarget = tId;
+      await redis.set(`session:${sid}`, session);
+      return sendJson(res, 200, { ok: true });
     }
 
-    await redis.set(`session:${sid}`, session);
-    return sendJson(res, 200, { ok: true });
+    return sendJson(res, 400, { ok: false, reason: "bad_type" });
   }
 
   if (session.status === "vote") {
     if (type !== "vote") return sendJson(res, 400, { ok: false, reason: "bad_type" });
+
+    const target = findAlivePlayerById(session, tId);
+    if (!target) return sendJson(res, 400, { ok: false, reason: "target_not_alive" });
+
     session.vote.votes[String(userId)] = tId;
     await redis.set(`session:${sid}`, session);
 
@@ -70,7 +105,6 @@ module.exports = async (req, res) => {
       }
 
       if (win.ended) {
-        // reveal roles
         const reveal = Object.values(s2.players)
           .map(p => `• ${p.name} — ${p.role.toUpperCase()}`)
           .join("\n");

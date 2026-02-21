@@ -9,12 +9,10 @@ function authOrSoftFail(initData, botToken) {
   const v = validateInitData(initData, botToken);
   if (v.ok) return { ok: true, v };
 
-  // Telegram ichidan ochilmagan (yoki initData kelmagan) holat
   if (v.reason === "no_initData") {
     return { ok: false, soft: true, reason: "open_in_telegram" };
   }
 
-  // qolganlari haqiqiy auth xato
   return { ok: false, soft: false, reason: v.reason };
 }
 
@@ -23,8 +21,6 @@ async function cleanupEnded(session) {
   await redis.srem("activeSessions", session.sid);
 }
 
-// Cron bo'lmasa ham yurishi uchun: STATE chaqirilganda phase'larni best-effort advance qilamiz.
-// (bu funksiyalarni o'chirmaydi, faqat qo'shimcha barqarorlik)
 async function maybeAdvance(session) {
   const now = game.nowSec();
   let changed = false;
@@ -53,7 +49,6 @@ async function maybeAdvance(session) {
     const { session: s2, died } = game.resolveNight(session);
     changed = true;
 
-    // nightdan keyin ham win bo'lishi mumkin — shu kamchilikni yopamiz
     const win = game.checkWin(s2);
     if (win.ended) {
       s2.status = "ended";
@@ -84,7 +79,7 @@ async function maybeAdvance(session) {
     return { session, changed };
   }
 
-  // VOTE timeout => resolve (action.js all-voted bo'lsa ham resolve qiladi, bu esa timeout fallback)
+  // VOTE timeout => resolve
   if (session.status === "vote" && session.phaseEndsAt && now > session.phaseEndsAt) {
     const { session: s2, eliminated, win } = game.resolveVote(session);
     changed = true;
@@ -93,10 +88,13 @@ async function maybeAdvance(session) {
     else await tg.sendMessage(s2.chatId, `🗳️ Yakun: hech kim chiqmaydi.`);
 
     if (win.ended) {
-      const reveal = Object.values(s2.players).map(p => `• ${p.name} — ${p.role.toUpperCase()}`).join("\n");
+      const reveal = Object.values(s2.players)
+        .map(p => `• ${p.name} — ${p.role.toUpperCase()}`)
+        .join("\n");
       await tg.sendMessage(s2.chatId, `🏁 O‘yin tugadi! G‘olib: ${win.winner.toUpperCase()}\n\nRollar:\n${reveal}`);
       await cleanupEnded(s2);
     }
+
     return { session: s2, changed };
   }
 
@@ -110,19 +108,16 @@ module.exports = async (req, res) => {
   const sid = body?.sid;
   const initData = body?.initData;
 
-  // ✅ Auth soft-fail
+  if (!sid) return sendJson(res, 400, { ok: false, reason: "missing_sid" });
+
   const auth = authOrSoftFail(initData, process.env.BOT_TOKEN);
   if (!auth.ok) {
-    if (auth.soft) {
-      // 200 qaytaramiz: Vercel log 401 bilan to'lib ketmaydi
-      return sendJson(res, 200, { ok: false, reason: auth.reason });
-    }
+    if (auth.soft) return sendJson(res, 200, { ok: false, reason: auth.reason });
     return sendJson(res, 401, { ok: false, reason: auth.reason });
   }
-
   const v = auth.v;
 
-  const session = sid ? await redis.get(`session:${sid}`) : null;
+  let session = await redis.get(`session:${sid}`);
   if (!session) return sendJson(res, 404, { ok: false, reason: "no_session" });
 
   const userId = v.user?.id;
@@ -132,19 +127,8 @@ module.exports = async (req, res) => {
   try {
     const adv = await maybeAdvance(session);
     if (adv.changed) await redis.set(`session:${sid}`, adv.session);
-    // session pointer'ni yangilaymiz
-    session.status = adv.session.status;
-    session.joinEndsAt = adv.session.joinEndsAt;
-    session.phaseEndsAt = adv.session.phaseEndsAt;
-    session.round = adv.session.round;
-    session.players = adv.session.players;
-    session.night = adv.session.night;
-    session.vote = adv.session.vote;
-    session.chatId = adv.session.chatId;
-    session.chatTitle = adv.session.chatTitle;
-    session.sid = adv.session.sid;
+    session = adv.session;
   } catch (e) {
-    // state endpoint yiqilib ketmasin
     console.error("maybeAdvance error:", e);
   }
 
@@ -152,9 +136,6 @@ module.exports = async (req, res) => {
   try { await tg.getChatMember(session.chatId, userId); } catch {}
 
   const me = session.players[String(userId)] || null;
-  const myRole = me?.role || null;
-
-  // Komissar uchun private note
   const note = session.night?.inspectNotes?.[String(userId)] || null;
 
   return sendJson(res, 200, {
@@ -168,6 +149,6 @@ module.exports = async (req, res) => {
       round: session.round,
       players: game.publicPlayerList(session)
     },
-    me: me ? { id: me.id, name: me.name, alive: me.alive, role: myRole, note } : null
+    me: me ? { id: me.id, name: me.name, alive: me.alive, role: me.role || null, note } : null
   });
 };

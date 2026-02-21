@@ -11,14 +11,16 @@ module.exports = async (req, res) => {
   const sid = body?.sid;
   const initData = body?.initData;
 
+  if (!sid) return sendJson(res, 400, { ok: false, reason: "missing_sid" });
+
   const v = validateInitData(initData, process.env.BOT_TOKEN);
   if (!v.ok) return sendJson(res, 401, { ok: false, reason: v.reason });
 
-  const session = sid ? await redis.get(`session:${sid}`) : null;
-  if (!session) return sendJson(res, 404, { ok: false });
+  const session = await redis.get(`session:${sid}`);
+  if (!session) return sendJson(res, 404, { ok: false, reason: "no_session" });
 
   const userId = v.user?.id;
-  if (!userId) return sendJson(res, 401, { ok: false });
+  if (!userId) return sendJson(res, 401, { ok: false, reason: "no_user" });
 
   if (session.status !== "lobby") return sendJson(res, 400, { ok: false, reason: "not_lobby" });
 
