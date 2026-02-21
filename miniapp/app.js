@@ -1,238 +1,250 @@
+/* global Telegram */
+
 const tg = window.Telegram?.WebApp;
 
-// ------- helpers -------
-function setText(id, txt){ document.getElementById(id).textContent = txt; }
-function el(id){ return document.getElementById(id); }
-
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function qs(name) {
+  return new URLSearchParams(location.search).get(name);
 }
 
-function roleLabel(r){
-  if (!r) return "—";
-  const map = { don:"DON", mafia:"MAFIA", komissar:"KOMISSAR", doctor:"DOCTOR", civil:"CIVIL" };
-  return map[r] || r.toUpperCase();
-}
+let sid = null;
 
-function phaseLabel(s){
-  const map = { lobby:"LOBBY", night:"NIGHT", day:"DAY", vote:"VOTE", ended:"ENDED" };
-  return map[s] || String(s).toUpperCase();
-}
-
-// ------- SID: URL -> hash -> sessionStorage fallback (MUHIM FIX) -------
-function getSidStable(){
-  const u = new URL(location.href);
-
-  // 1) query: ?sid=...
-  let sid = u.searchParams.get("sid");
-
-  // 2) hash: #sid=...
-  if (!sid && location.hash) {
-    const h = new URLSearchParams(location.hash.replace(/^#/, ""));
-    sid = h.get("sid") || null;
+function getSid() {
+  // 1) URL ?sid=
+  const fromUrl = qs("sid");
+  if (fromUrl) {
+    sessionStorage.setItem("mafia_sid", fromUrl);
+    return fromUrl;
   }
 
-  // 3) storage fallback
-  if (sid) {
-    sessionStorage.setItem("sid", sid);
-    return sid;
+  // 2) Telegram WebApp start_param (t.me/<bot>/<app>?startapp=SID)
+  const fromStartParam = tg?.initDataUnsafe?.start_param;
+  if (fromStartParam) {
+    sessionStorage.setItem("mafia_sid", fromStartParam);
+    return fromStartParam;
   }
-  return sessionStorage.getItem("sid");
+
+  // 3) Refresh support
+  const cached = sessionStorage.getItem("mafia_sid");
+  return cached || null;
 }
 
-function getInitData(){
-  return tg?.initData || "";
-}
-
-function showBlockScreen(title, desc){
-  // popup spam o‘rniga UI
+function showMissingSid() {
   document.body.innerHTML = `
-    <div style="font-family:system-ui; padding:22px; line-height:1.4">
-      <h1 style="margin:0 0 10px; font-size:28px">${escapeHtml(title)}</h1>
-      <div style="opacity:.85; font-size:16px">${escapeHtml(desc)}</div>
-      <div style="margin-top:14px; opacity:.85">✅ Guruhga qayting → botga <b>/start</b> yozing → chiqqan tugma orqali qayta kiring.</div>
-    </div>
-  `;
+    <div style="padding:28px; font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial; line-height:1.4">
+      <h1 style="font-size:34px; margin:0 0 10px">Sessiya topilmadi (sid yo‘q)</h1>
+      <p style="font-size:18px; color:#555; margin:0 0 18px">
+        Mini App’ni bot yuborgan tugma (yoki t.me link) orqali oching.
+      </p>
+      <div style="font-size:18px">
+        ✅ Guruhga qayting → botga <b>/start</b> yozing → chiqqan <b>🎮 Mini App</b> tugmasi orqali kiring.
+      </div>
+    </div>`;
 }
 
-// ------- API -------
-async function api(path, body){
-  const r = await fetch(path, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify(body || {})
-  });
-  return r.json();
+function el(id) {
+  return document.getElementById(id);
 }
 
-function fmtTimer(sec){
-  if (!Number.isFinite(sec)) return "—";
-  if (sec < 0) sec = 0;
-  const m = Math.floor(sec/60);
-  const s = sec % 60;
-  return `${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}`;
+function setText(id, text) {
+  const node = el(id);
+  if (!node) return;
+  node.textContent = text ?? "";
 }
 
-function renderPlayers(players){
-  const root = el("players");
-  root.innerHTML = "";
-  (players || []).forEach(p => {
-    const d = document.createElement("div");
-    d.className = "player";
-    d.innerHTML = `
-      <div class="name">${escapeHtml(p.name)}</div>
-      <div class="meta">${p.alive ? "🟢 alive" : "🔴 dead"}</div>
-    `;
-    root.appendChild(d);
-  });
+function setHtml(id, html) {
+  const node = el(id);
+  if (!node) return;
+  node.innerHTML = html ?? "";
 }
 
-function renderTargets(session, me){
-  const root = el("targets");
-  root.innerHTML = "";
-
-  if (!session || !me) return;
-
-  const alive = (session.players || []).filter(p => p.alive);
-  alive.forEach(p => {
-    const b = document.createElement("button");
-    b.className = "btn target";
-    b.textContent = p.name;
-    b.onclick = async () => {
-      const sid = getSidStable();
-      if (!sid) return;
-
-      let type = null;
-      if (session.status === "night") {
-        if (me.role === "doctor") type = "heal";
-        else if (me.role === "komissar") type = "inspect";
-        else if (me.role === "don" || me.role === "mafia") type = "kill";
-      } else if (session.status === "vote") {
-        type = "vote";
-      }
-
-      if (!type) return;
-      const j = await api("/api/game/action", { sid, initData: getInitData(), type, targetId: p.id });
-      if (!j.ok) {
-        tg?.showPopup?.({ message: `Xatolik: ${j.reason || "action_failed"}` });
-      }
-    };
-    root.appendChild(b);
-  });
+function fmtMs(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
 }
 
-function setNote(note){
-  const box = el("noteBox");
-  if (note) {
-    box.classList.remove("hidden");
-    box.textContent = note;
-  } else {
-    box.classList.add("hidden");
-    box.textContent = "";
+async function api(path, body) {
+  try {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+    const data = await r.json().catch(() => null);
+    if (!data) return { ok: false, reason: "bad_json" };
+    return data;
+  } catch (e) {
+    return { ok: false, reason: "network_error" };
   }
 }
 
-function updateUI(state){
-  const s = state?.session;
-  const me = state?.me;
+let state = null;
 
-  setText("chatTitle", s?.chatTitle || "…");
-  setText("phasePill", phaseLabel(s?.status || "loading"));
-  setText("meName", me?.name || "—");
-  setText("meRole", roleLabel(me?.role));
+function render() {
+  if (!state) return;
 
-  renderPlayers(s?.players || []);
-  setNote(me?.note || null);
+  setText("chatTitle", state.chatTitle || "—");
+  setText("phasePill", state.phaseLabel || state.phase || "—");
 
-  // timer
-  const now = Math.floor(Date.now()/1000);
-  let ends = null;
-  if (s?.status === "lobby") ends = s.joinEndsAt;
-  else ends = s?.phaseEndsAt;
-  const left = ends ? Math.max(0, ends - now) : null;
-  setText("timer", left === null ? "—" : fmtTimer(left));
+  setText("meName", state.me?.name || "—");
+  setText("meRole", state.me?.roleLabel || state.me?.role || "—");
 
-  // buttons
-  const lobby = (s?.status === "lobby");
-  el("lobbyActions").style.display = lobby ? "flex" : "none";
-  el("actionCard").style.display = (s?.status === "night" || s?.status === "vote") ? "block" : "none";
+  const endsAt = state.phaseEndsAt;
+  if (endsAt) setText("timer", fmtMs(endsAt - Date.now()));
+  else setText("timer", "—");
 
-  // action hint
-  let hint = "—";
-  if (s?.status === "night") {
-    if (me?.role === "doctor") hint = "🩺 Shifokor: kimni davolaysiz?";
-    else if (me?.role === "komissar") hint = "🕵️ Komissar: kimni tekshirasiz?";
-    else if (me?.role === "don" || me?.role === "mafia") hint = "🔫 Mafia: kimni o‘ldirasiz?";
-    else hint = "🌙 Tunda tinch aholi uxlaydi…";
-  } else if (s?.status === "vote") {
-    hint = "🗳️ Ovoz bering";
+  el("btnJoin").disabled = !state.canJoin;
+  el("btnLeave").disabled = !state.canLeave;
+  el("btnStartNow").disabled = !state.canStart;
+
+  const players = state.players || [];
+  setHtml(
+    "players",
+    players
+      .map((p) => {
+        const alive = p.alive ? "✅" : "💀";
+        const role = p.roleLabel ? ` <span class="role">(${p.roleLabel})</span>` : "";
+        return `<div class="player">${alive} <b>${p.name}</b>${role}</div>`;
+      })
+      .join("")
+  );
+
+  // Targets
+  const targets = el("targets");
+  if (targets) {
+    targets.innerHTML = "";
+    const alive = players.filter((p) => p.alive);
+    alive.forEach((p) => {
+      const btn = document.createElement("button");
+      btn.className = "targetBtn";
+      btn.textContent = p.name;
+      btn.onclick = async () => {
+        const resp = await api(`/api/game/action`, {
+          sid,
+          initData: tg.initData,
+          targetUserId: p.userId,
+        });
+
+        if (!resp.ok) {
+          const reason = resp.error || resp.reason || "unknown";
+          if (reason === "no_session") {
+            if (window.__mafia_refresh_timer) clearInterval(window.__mafia_refresh_timer);
+            showMissingSid();
+            return;
+          }
+          tg.showAlert(`Xatolik: ${reason}`);
+        } else {
+          state = resp;
+          render();
+        }
+      };
+      targets.appendChild(btn);
+    });
   }
-  setText("actionHint", hint);
-  renderTargets(s, me);
+
+  // Hints
+  setText("actionHint", state.phase === "night" ? "🌙 Kechasi rolingiz bo‘yicha harakat qiling." : "☀️ Kunduzi ovoz bering.");
 }
 
-async function poll(){
-  const sid = getSidStable();
+async function refresh() {
+  const resp = await api(`/api/game/state`, { sid, initData: tg.initData });
+
+  if (!resp.ok) {
+    const reason = resp.error || resp.reason || "unknown";
+
+    if (reason === "no_session") {
+      if (window.__mafia_refresh_timer) clearInterval(window.__mafia_refresh_timer);
+      showMissingSid();
+      return;
+    }
+
+    if (reason === "bad_init_data") {
+      tg.showAlert("Telegram initData xato. Mini App’ni bot yuborgan tugma orqali Telegram ichida oching.");
+      return;
+    }
+
+    tg.showAlert(`State xatolik: ${reason}`);
+    return;
+  }
+
+  state = resp;
+  render();
+}
+
+async function join() {
+  const resp = await api(`/api/game/join`, { sid, initData: tg.initData });
+  if (!resp.ok) {
+    const reason = resp.error || resp.reason || "unknown";
+    if (reason === "no_session") {
+      if (window.__mafia_refresh_timer) clearInterval(window.__mafia_refresh_timer);
+      showMissingSid();
+      return;
+    }
+    tg.showAlert(`Join xatolik: ${reason}`);
+    return;
+  }
+  state = resp;
+  render();
+}
+
+async function leave() {
+  const resp = await api(`/api/game/leave`, { sid, initData: tg.initData });
+  if (!resp.ok) {
+    const reason = resp.error || resp.reason || "unknown";
+    if (reason === "no_session") {
+      if (window.__mafia_refresh_timer) clearInterval(window.__mafia_refresh_timer);
+      showMissingSid();
+      return;
+    }
+    tg.showAlert(`Leave xatolik: ${reason}`);
+    return;
+  }
+  state = resp;
+  render();
+}
+
+async function startNow() {
+  const resp = await api(`/api/game/start`, { sid, initData: tg.initData });
+  if (!resp.ok) {
+    const reason = resp.error || resp.reason || "unknown";
+    if (reason === "no_session") {
+      if (window.__mafia_refresh_timer) clearInterval(window.__mafia_refresh_timer);
+      showMissingSid();
+      return;
+    }
+    tg.showAlert(`Start xatolik: ${reason}`);
+    return;
+  }
+  state = resp;
+  render();
+}
+
+(function init() {
+  if (!tg) {
+    alert("Telegram WebApp topilmadi. Mini App’ni Telegram ichida oching.");
+    return;
+  }
+
+  sid = getSid();
   if (!sid) {
-    showBlockScreen("Sessiya topilmadi (sid yo‘q)", "Mini App’ni bot yuborgan tugma orqali oching.");
+    showMissingSid();
     return;
   }
 
-  const j = await api("/api/game/state", { sid, initData: getInitData() });
-
-  if (!j.ok) {
-    if (j.reason === "open_in_telegram") {
-      showBlockScreen("Telegram ichidan oching", "Mini App’ni faqat Telegram ichidan ochish kerak.");
-      return;
-    }
-    if (j.reason === "no_session") {
-      showBlockScreen("Sessiya topilmadi (no_session)", "Guruhga qayting va /start orqali yangi sessiya oching.");
-      return;
-    }
-    if (j.reason === "missing_sid") {
-      showBlockScreen("Sessiya topilmadi (sid yo‘q)", "Mini App’ni bot yuborgan tugma orqali oching.");
-      return;
-    }
-    tg?.showPopup?.({ message: `State xatolik: ${j.reason || "unknown"}` });
+  if (!tg.initData) {
+    alert("Telegram initData yo‘q. Mini App’ni bot yuborgan tugma orqali Telegram ichida oching.");
     return;
   }
 
-  updateUI(j);
-}
+  tg.ready();
+  tg.expand();
 
-async function onJoin(){
-  const sid = getSidStable();
-  if (!sid) return;
-  const j = await api("/api/game/join", { sid, initData: getInitData() });
-  if (!j.ok) tg?.showPopup?.({ message: `Join xatolik: ${j.reason || "join_failed"}` });
-  await poll();
-}
+  el("btnJoin").onclick = join;
+  el("btnLeave").onclick = leave;
+  el("btnStartNow").onclick = startNow;
 
-async function onLeave(){
-  const sid = getSidStable();
-  if (!sid) return;
-  const j = await api("/api/game/leave", { sid, initData: getInitData() });
-  if (!j.ok) tg?.showPopup?.({ message: `Leave xatolik: ${j.reason || "leave_failed"}` });
-  await poll();
-}
-
-async function onStartNow(){
-  const sid = getSidStable();
-  if (!sid) return;
-  const j = await api("/api/game/start", { sid, initData: getInitData() });
-  if (!j.ok) tg?.showPopup?.({ message: `Start xatolik: ${j.reason || "start_failed"}` });
-  await poll();
-}
-
-function boot(){
-  try { tg?.ready?.(); tg?.expand?.(); } catch {}
-
-  el("btnJoin").onclick = onJoin;
-  el("btnLeave").onclick = onLeave;
-  el("btnStartNow").onclick = onStartNow;
-
-  poll();
-  setInterval(poll, 2000);
-}
-
-boot();
+  refresh();
+  window.__mafia_refresh_timer && clearInterval(window.__mafia_refresh_timer);
+  window.__mafia_refresh_timer = setInterval(refresh, 2500);
+})();
