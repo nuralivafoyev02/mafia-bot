@@ -1,0 +1,10 @@
+{
+  "name": "mafia-telegram-miniapp",
+  "private": true,
+  "version": "1.0.0",
+  "type": "commonjs",
+  "dependencies": {
+    "@upstash/redis": "^1.35.0",
+    "nanoid": "^5.0.7"
+  }
+}

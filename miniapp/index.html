@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Mafia Mini App</title>
+
+  <script src="https://telegram.org/js/telegram-web-app.js?59"></script>
+  <link rel="stylesheet" href="./styles.css"/>
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div>
+        <div class="title">🕵️ Mafia</div>
+        <div id="chatTitle" class="subtitle">…</div>
+      </div>
+      <div class="pill" id="phasePill">LOADING</div>
+    </header>
+
+    <section class="card" id="meCard">
+      <div class="row">
+        <div>
+          <div class="label">Siz</div>
+          <div id="meName" class="value">—</div>
+        </div>
+        <div class="right">
+          <div class="label">Rol</div>
+          <div id="meRole" class="value mono">—</div>
+        </div>
+      </div>
+
+      <div id="noteBox" class="note hidden"></div>
+
+      <div class="row mt">
+        <div class="label">Timer</div>
+        <div id="timer" class="value mono">—</div>
+      </div>
+
+      <div class="actions mt" id="lobbyActions">
+        <button class="btn primary" id="btnJoin">✅ Join</button>
+        <button class="btn ghost" id="btnLeave">🚪 Leave</button>
+        <button class="btn" id="btnStartNow">🚀 Start now</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <div class="label">O‘yinchilar</div>
+      <div id="players" class="grid"></div>
+    </section>
+
+    <section class="card" id="actionCard">
+      <div class="label">Action</div>
+      <div id="actionHint" class="subtitle">—</div>
+      <div id="targets" class="targets"></div>
+    </section>
+
+    <footer class="footer">
+      <div class="tiny">Mini App orqali o‘ynaysiz.</div>
+    </footer>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
