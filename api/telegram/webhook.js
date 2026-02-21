@@ -54,7 +54,12 @@ module.exports = async (req, res) => {
         });
         await saveSession(session);
 
-        const url = `${APP_URL}/miniapp/index.html?sid=${session.sid}`;
+        const proto = req.headers["x-forwarded-proto"] || "https";
+        const host = req.headers["x-forwarded-host"] || req.headers["host"];
+        const baseUrl = (APP_URL && APP_URL.startsWith("http")) ? APP_URL : `${proto}://${host}`;
+
+        // /miniapp/ + sid
+        const url = `${baseUrl}/miniapp/?sid=${session.sid}`;
 
         await tg.sendMessage(chat.id,
           `🎲 Mafia o‘yini ochildi!\n\n` +
