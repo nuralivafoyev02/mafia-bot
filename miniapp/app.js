@@ -1,13 +1,12 @@
 const tg = window.Telegram?.WebApp;
 
-function qs(name){
-  const u = new URL(location.href);
-  return u.searchParams.get(name);
-}
-const sid = qs("sid");
-
+// ------- helpers -------
 function setText(id, txt){ document.getElementById(id).textContent = txt; }
 function el(id){ return document.getElementById(id); }
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
 
 function roleLabel(r){
   if (!r) return "—";
@@ -20,17 +19,58 @@ function phaseLabel(s){
   return map[s] || String(s).toUpperCase();
 }
 
-async function api(path, body){
-  const r = await fetch(path, {
-    method:"POST",
-    headers: { "Content-Type":"application/json" },
-    body: JSON.stringify(body)
-  });
-  return r.json();
+// ------- SID: URL -> sessionStorage fallback (MUHIM FIX) -------
+function getSidStable(){
+  const u = new URL(location.href);
+  const sidFromUrl = u.searchParams.get("sid");
+  if (sidFromUrl) {
+    sessionStorage.setItem("sid", sidFromUrl);
+    return sidFromUrl;
+  }
+  return sessionStorage.getItem("sid");
 }
 
+function getInitData(){
+  return tg?.initData || "";
+}
+
+function showBlockScreen(title, desc){
+  // popup spam o‘rniga UI
+  document.body.innerHTML = `
+    <div style="font-family:system-ui; padding:22px; line-height:1.5;">
+      <h2 style="margin:0 0 8px;">${escapeHtml(title)}</h2>
+      <div style="opacity:.8">${escapeHtml(desc)}</div>
+      <div style="margin-top:14px; opacity:.7; font-size:13px">
+        ✅ Guruhga qayting → botga <b>/start</b> yozing → chiqqan tugma orqali qayta kiring.
+      </div>
+    </div>
+  `;
+}
+
+// ------- API -------
+async function api(path, body){
+  try {
+    const r = await fetch(path, {
+      method:"POST",
+      headers: { "Content-Type":"application/json" },
+      body: JSON.stringify(body)
+    });
+
+    // ba’zan error body JSON bo‘lmasligi mumkin
+    const text = await r.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch { data = { ok:false, reason:"non_json_response", raw:text.slice(0,200) }; }
+    return data;
+  } catch (e) {
+    return { ok:false, reason:"network_error", message:String(e) };
+  }
+}
+
+// ------- state -------
 let state = null;
 let timerInt = null;
+let pollInt = null;
+let shownOnce = new Set(); // popupni 1 marta ko‘rsatish uchun
 
 function renderPlayers(players){
   const root = el("players");
@@ -47,14 +87,10 @@ function renderPlayers(players){
   });
 }
 
-function escapeHtml(s){
-  return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
-}
-
 function updateTimer(){
   if (!state?.session) return;
   const now = Math.floor(Date.now()/1000);
-  let end = state.session.status === "lobby" ? state.session.joinEndsAt : state.session.phaseEndsAt;
+  const end = state.session.status === "lobby" ? state.session.joinEndsAt : state.session.phaseEndsAt;
   if (!end) { setText("timer","—"); return; }
   const left = Math.max(0, end - now);
   const mm = String(Math.floor(left/60)).padStart(2,"0");
@@ -130,8 +166,10 @@ function renderActionArea(){
       <button>${label}</button>
     `;
     row.querySelector("button").onclick = async () => {
-      const resp = await api(`/api/game/action`, { sid, initData: tg.initData, type, targetId: player.id });
-      if (!resp.ok) tg.showAlert(`Xatolik: ${resp.reason || "unknown"}`);
+      const sid = getSidStable();
+      const initData = getInitData();
+      const resp = await api(`/api/game/action`, { sid, initData, type, targetId: player.id });
+      if (!resp.ok) tg.showAlert?.(`Xatolik: ${resp.reason || "unknown"}`);
       else tg.hapticFeedback?.notificationOccurred("success");
       await refresh();
     };
@@ -160,7 +198,6 @@ function render(){
   setText("meName", me?.name || "—");
   setText("meRole", me?.role ? roleLabel(me.role) : "🔒 (o‘yin boshlanmagan)");
 
-  // lobby buttons
   el("btnJoin").style.display = (!me && s?.status==="lobby") ? "inline-flex" : "none";
   el("btnLeave").style.display = (me && s?.status==="lobby") ? "inline-flex" : "none";
   el("btnStartNow").style.display = (s?.status==="lobby") ? "inline-flex" : "none";
@@ -175,31 +212,75 @@ function render(){
 }
 
 async function refresh(){
-  const resp = await api(`/api/game/state`, { sid, initData: tg.initData });
-  if (!resp.ok) {
-    tg.showAlert(`State xatolik: ${resp.reason || "unknown"}`);
+  const sid = getSidStable();
+  const initData = getInitData();
+
+  // ✅ sid yo‘q => API’ga urmaymiz
+  if (!sid) {
+    stopPolling();
+    showBlockScreen("Sessiya topilmadi (sid yo‘q)", "Mini App’ni bot yuborgan tugma orqali oching.");
     return;
   }
+
+  // ✅ Telegram ichidan ochilmagan => API’ga urmaymiz
+  if (!initData) {
+    stopPolling();
+    showBlockScreen("Telegram konteksti yo‘q", "Mini App faqat Telegram ichida ishlaydi.");
+    return;
+  }
+
+  const resp = await api(`/api/game/state`, { sid, initData });
+
+  if (!resp.ok) {
+    // no_session / missing_sid / open_in_telegram bo‘lsa poll to‘xtasin
+    if (resp.reason === "no_session" || resp.reason === "missing_sid" || resp.reason === "open_in_telegram") {
+      stopPolling();
+      showBlockScreen(`State xatolik: ${resp.reason}`, "Guruhga qayting va o‘yinni qayta boshlang.");
+      return;
+    }
+
+    // boshqa xatolarni 1 marta alert qilamiz (spammasin)
+    const key = `state:${resp.reason || "unknown"}`;
+    if (!shownOnce.has(key)) {
+      shownOnce.add(key);
+      tg.showAlert?.(`State xatolik: ${resp.reason || "unknown"}`);
+    }
+    return;
+  }
+
   state = resp;
   render();
 }
 
 async function join(){
-  const resp = await api(`/api/game/join`, { sid, initData: tg.initData });
-  if (!resp.ok) tg.showAlert(`Join xatolik: ${resp.reason || "unknown"}`);
+  const sid = getSidStable();
+  const initData = getInitData();
+  const resp = await api(`/api/game/join`, { sid, initData });
+  if (!resp.ok) tg.showAlert?.(`Join xatolik: ${resp.reason || "unknown"}`);
   await refresh();
 }
 
 async function leave(){
-  const resp = await api(`/api/game/leave`, { sid, initData: tg.initData });
-  if (!resp.ok) tg.showAlert(`Leave xatolik: ${resp.reason || "unknown"}`);
+  const sid = getSidStable();
+  const initData = getInitData();
+  const resp = await api(`/api/game/leave`, { sid, initData });
+  if (!resp.ok) tg.showAlert?.(`Leave xatolik: ${resp.reason || "unknown"}`);
   await refresh();
 }
 
 async function startNow(){
-  const resp = await api(`/api/game/start`, { sid, initData: tg.initData });
-  if (!resp.ok) tg.showAlert(`Start xatolik: ${resp.reason || "unknown"}`);
+  const sid = getSidStable();
+  const initData = getInitData();
+  const resp = await api(`/api/game/start`, { sid, initData });
+  if (!resp.ok) tg.showAlert?.(`Start xatolik: ${resp.reason || "unknown"}`);
   await refresh();
+}
+
+function stopPolling(){
+  if (pollInt) clearInterval(pollInt);
+  pollInt = null;
+  if (timerInt) clearInterval(timerInt);
+  timerInt = null;
 }
 
 (function init(){
@@ -215,5 +296,5 @@ async function startNow(){
   el("btnStartNow").onclick = startNow;
 
   refresh();
-  setInterval(refresh, 2500); // realtimega yaqin
+  pollInt = setInterval(refresh, 2500);
 })();
