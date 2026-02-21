@@ -1,8 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "rewrites": [
-    { "source": "/", "destination": "/miniapp/index.html" },
-    { "source": "/miniapp", "destination": "/miniapp/index.html" },
-    { "source": "/miniapp/", "destination": "/miniapp/index.html" }
+  "redirects": [
+    { "source": "/", "destination": "/miniapp/", "permanent": false },
+    { "source": "/miniapp", "destination": "/miniapp/", "permanent": false }
   ]
 }
